@@ -1,0 +1,51 @@
+services:
+  robot_arm_dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+      args:
+        ROS_DISTRO: humble
+        INSTALL_SIM_TOOLS: "true"
+
+    image: ${IMAGE_NAME:-robot-arm}:${IMAGE_TAG:-local-dev}
+    container_name: robot_arm_dev
+    privileged: true
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    device_cgroup_rules:
+      - "c 13:* rmw"
+    devices:
+      - /dev/dri:/dev/dri
+    stdin_open: true
+    tty: true
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'source /opt/ros/$$ROS_DISTRO/setup.bash && ros2 pkg list > /dev/null'"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      # Different from other local ROS2 containers' domain ID (42) on
+      # purpose — both use network_mode: host, so a shared domain ID would
+      # let separate containers see each other's nodes/topics if run at once.
+      - ROS_DOMAIN_ID=43
+      - ROS_LOCALHOST_ONLY=0
+      - SDL_VIDEODRIVER=dummy
+      - SDL_AUDIODRIVER=dummy
+    volumes:
+      - ./:/work:rw
+      - ./src:/opt/ws/src:rw
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev/input:/dev/input:rw
+      - /run/udev:/run/udev:ro
+      # Stable by-id symlink for the arm's OV5693 camera (auto-created by
+      # Ubuntu's own 60-persistent-v4l.rules from the device's USB serial
+      # -- no custom udev rule needed). Without this mount the container
+      # only sees raw /dev/videoN nodes, whose number shifts across
+      # reboots/replugs/other-USB-devices, unlike this symlink.
+      - /dev/v4l:/dev/v4l:ro
