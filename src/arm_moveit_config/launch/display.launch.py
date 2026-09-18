@@ -1,13 +1,12 @@
 import sys
 
 from launch import LaunchDescription
-from launch_ros.actions import SetParameter
+from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
-from moveit_configs_utils.launches import generate_moveit_rviz_launch
+from moveit_configs_utils.launches import generate_moveit_rviz_launch, generate_rsp_launch
 
 
 def _arg_from_argv(name: str, default: str) -> str:
-    # See rsp.launch.py's _arg_from_argv.
     prefix = f"{name}:="
     for arg in sys.argv:
         if arg.startswith(prefix):
@@ -16,6 +15,9 @@ def _arg_from_argv(name: str, default: str) -> str:
 
 
 def generate_launch_description():
+    """Visualize the arm with no Gazebo/physics: robot_state_publisher +
+    joint_state_publisher_gui (drag sliders to move joints) + RViz.
+    """
     moveit_config = (
         MoveItConfigsBuilder("robot_arm", package_name="arm_moveit_config")
         .robot_description(mappings={
@@ -24,10 +26,17 @@ def generate_launch_description():
         })
         .to_moveit_configs()
     )
+
+    rsp_launch = generate_rsp_launch(moveit_config)
     rviz_launch = generate_moveit_rviz_launch(moveit_config)
-    # Sim-only repo: RViz needs Gazebo's /clock, not wall time, or TF
-    # lookups against sim-timestamped messages fail/extrapolate.
+
+    joint_state_publisher_gui = Node(
+        package="joint_state_publisher_gui",
+        executable="joint_state_publisher_gui",
+    )
+
     return LaunchDescription([
-        SetParameter(name="use_sim_time", value=True),
+        *rsp_launch.entities,
+        joint_state_publisher_gui,
         *rviz_launch.entities,
     ])
