@@ -14,10 +14,8 @@ def _arg_from_argv(name: str, default: str) -> str:
 
 
 def generate_launch_description():
-    # planning_pipelines restricted to ompl on purpose — see the matching
-    # comment in arm_sim/launch/arm_gazebo.launch.py: without this,
-    # move_group ambiguously picks CHOMP, which rejects Cartesian
-    # pose-constraint goals outright (INVALID_GOAL_CONSTRAINTS).
+    # planning_pipelines restricted to ompl on purpose — otherwise
+    # move_group picks an ambiguous default planning plugin.
     moveit_config = (
         MoveItConfigsBuilder("robot_arm", package_name="arm_moveit_config")
         .robot_description(mappings={

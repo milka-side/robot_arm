@@ -1,8 +1,5 @@
 """Cross-host arm-motion lock — client-side retry/fail-closed logic,
-against fake acquire/release service clients (no real ROS graph needed
-here; see test_arm_motion_lock_server.py for the server's own state
-machine, and both together are the real cross-process guarantee this
-used to get from a single multiprocess flock test).
+against fake acquire/release service clients.
 """
 import pytest
 
@@ -69,9 +66,7 @@ def test_busy_raises_immediately_when_timeout_sec_is_zero():
 
 
 def test_unreachable_server_fails_closed():
-    """Never silently skip cross-host exclusion just because its own
-    arbiter is unreachable — this is the whole point of the fix.
-    """
+    """Never silently skip exclusion just because the arbiter is unreachable."""
     acquire = _FakeClient(available=False)
     release = _FakeClient()
 

@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
 """Cross-host arm-motion lock server — the network-reachable half of
-arm_motion_lock.py's mutual exclusion.
-
-Run once, on whichever host actually owns robot_arm_controller —
-NOT per-process, unlike the old /tmp flock this replaces, which only
-worked when both callers happened to run on the same machine. Multiple
-operator-control clients (e.g. keyboard_servo_node.py, or another
-controller-node) can submit goals to the same JTC action server from
-different hosts; a plain file lock can't provide mutual exclusion across
-that host boundary, a ROS service can.
-
-Lease-based rather than connection-held: a plain acquire/release service
-pair can't detect a crashed holder the way flock ties a lock to an open
-file descriptor's process lifetime. Every acquire carries a caller-
-supplied lease_sec; if the holder never releases (crash, network drop),
-the lease simply expires and the lock becomes acquirable again instead
-of deadlocking every future request.
+arm_motion_lock.py's mutual exclusion. Run once, on whichever host owns
+robot_arm_controller. Lease-based, so a crashed holder's lock expires
+instead of deadlocking future requests.
 """
 
 import threading

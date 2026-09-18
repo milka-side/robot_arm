@@ -1,60 +1,8 @@
 #!/usr/bin/env python3
-"""
-Keyboard control node for MoveIt Servo.
+"""Keyboard/gamepad control node for MoveIt Servo.
 
-Reads keyboard input and sends Cartesian velocity commands to MoveIt Servo.
-Designed to be modular — core logic is in ServoController class,
-so switching to gamepad (joy package) requires only replacing the input source.
-
-Controls:
-    EEF translation — absolute (in arm_mount_link):
-        w / s  — +X / -X
-        a / d  — +Y / -Y
-        q / e  — +Z / -Z
-
-    EEF translation — view-relative (in arm_camera_link, rigid with the
-    gripper; axes are REP-103 so +X is where the camera and gripper point):
-        t / g        — up / down
-
-    Both translation sets are summed, so they can be held together.
-
-    EEF rotation (about arm_tcp_link). Names are from the operator's point of
-    view, i.e. the camera frame, which is what the TCP axes actually work out
-    to: TCP +X is the camera's left-right axis (pitch), TCP +Y its vertical
-    axis (yaw), TCP +Z its line of sight (roll):
-        i / k  — pitch (+/- wx)
-        u / o  — yaw   (+/- wy)
-        j / l  — roll  (+/- wz)
-
-    Gripper (commanded directly on gripper_right/left_controller, bypassing Servo):
-        b / v  — open / close
-
-    r      — move to home + start servo
-    ESC/x  — exit
-
-Gamepad controls (via ros2 joy joy_node, e.g. Stadia controller).
-All gamepad translation is view-relative (arm_camera_link); rotation is
-about arm_tcp_link, same as the keyboard's I/K/U/O/J/L:
-    Left stick  left/right — EEF left / right (camera)
-    Left stick  up/down    — EEF forward / back (camera)
-    Right stick up/down    — EEF up / down (camera)
-    Right stick left/right — yaw (TCP)
-    R1 + right stick up/down    — pitch (TCP)
-    R1 + right stick left/right — roll (TCP)
-    A                — move to home + start servo
-    X                — exit
-
-Usage (stack in one terminal, input in another):
-        ros2 launch arm_bringup arm.launch.py use_fake_hardware:=false
-        ros2 run arm_teleop keyboard_servo_node
-        # optional: pin a device — ros2 run ... --ros-args -p keyboard_device_path:=/dev/input/event19
-
-    Gazebo sim (sim clock + faster speeds, see arm_sim/config/keyboard_servo_sim.yaml):
-        ros2 run arm_teleop keyboard_servo_node --ros-args \\
-            --params-file $(ros2 pkg prefix arm_sim)/share/arm_sim/config/keyboard_servo_sim.yaml
-
-    Gamepad only:
-        ros2 launch arm_teleop gamepad.launch.py
+Reads input and sends Cartesian velocity commands to MoveIt Servo.
+See README.md for key bindings and usage.
 """
 
 import sys
@@ -94,8 +42,7 @@ from arm_teleop.arm_motion_lock import ArmMotionBusy, arm_motion_lock
 DEFAULT_LINEAR_SPEED  = 0.6
 DEFAULT_ANGULAR_SPEED = 1.8
 DEFAULT_PUBLISH_RATE  = 100.0
-# Q/E (±Z) folds the shoulder/elbow; without ω the TCP pitch walks.
-# Hold attitude only — do not scale XYZ (that made teleop feel slow).
+# Holds TCP attitude during translation without scaling XYZ.
 HOLD_ANGULAR_GAIN = 6.0
 HOLD_ANGULAR_MAX = 0.8
 HOLD_CMD_EPS = 1e-4
@@ -106,19 +53,12 @@ DEFAULT_EE_FRAME      = 'arm_tcp_link'
 DEFAULT_VIEW_FRAME    = 'arm_camera_link'
 # Fallback if poses.json "home" cannot be loaded (matches SRDF group_state home).
 DEFAULT_HOME_POSE     = [-1.5461, 0.1734, 0.8292, 1.4197, 0.0086, -1.5314]
-# 'auto' picks a USB/external keyboard (Keychron, etc.) over the laptop's
-# built-in AT Translated Set 2 device — the usual failure mode in Docker.
+# 'auto' picks a USB/external keyboard over the laptop's built-in one.
 DEFAULT_KEYBOARD_DEVICE_PATH = 'auto'
 DEFAULT_GAMEPAD_SHIFT_BUTTON = 10
 DEFAULT_SAFE_POSE_TIMEOUT = 60.0
-# Scaling passed on every move_group goal in _execute_move_group_constraints
-# (home moves) — fraction of each joint's own max_velocity/
-# max_acceleration (arm_moveit_config/config/joint_limits.yaml), which
-# itself already has a conservative default_velocity/acceleration_scaling_
-# factor of 0.1 ("for beginners"). 0.15 here felt slow/jerky in practice —
-# low acceleration in particular reads as jerkiness, not just slowness,
-# since the arm can't ramp torque smoothly. Raise further if still too slow,
-# lower again if it overshoots/oscillates or feels unsafe near people.
+# Fraction of each joint's max_velocity/max_acceleration
+# (arm_moveit_config/config/joint_limits.yaml) used for home moves.
 DEFAULT_PLAN_EXECUTE_VELOCITY_SCALING = 1.0
 DEFAULT_PLAN_EXECUTE_ACCELERATION_SCALING = 1.0
 
@@ -127,12 +67,9 @@ DEFAULT_GRIPPER_STROKE = 0.012  # m — matches finger_stroke in arm_macro.xacro
 
 GRIPPER_JOINT_NAME = 'arm_jaw_gripper_finger_right_joint'
 
-# ERC 2026 Rules, Appendix 3, REQ-OPS-090 mandates this be >= 5.0s during
-# actual competition — see run_planned_activity()'s own docstring. Exposed
-# as the 'activity_indicator_pre_delay_sec' ROS param specifically so it can
-# (and, at competition, MUST) be set back to ERC_REQUIRED_... via launch
-# argument; the default below is 0.0 for bench testing only.
-ERC_REQUIRED_ACTIVITY_INDICATOR_PRE_DELAY_SEC = 5.0
+# Minimum delay (seconds) before an activity's action runs, so the
+# activity-indicator light is visibly on first.
+REQUIRED_ACTIVITY_INDICATOR_PRE_DELAY_SEC = 5.0
 DEFAULT_ACTIVITY_INDICATOR_PRE_DELAY_SEC = 0.0
 DEFAULT_ACTIVITY_INDICATOR_TOPIC = 'activity_indicator'
 ACTIVITY_INDICATOR_COLOR_ACTIVE = (0.0, 0.0, 1.0, 1.0)  # blue, a=1 (lit)
@@ -260,8 +197,7 @@ def _resolve_keyboard_device_path(requested: str) -> str | None:
         return None
     return candidates[0][1]
 
-# Must mirror moveit_servo::StatusCode (status_codes.h) exactly — a prior
-# version of this table was off by one, mislabeling JOINT_BOUND as HALT_FOR_COLLISION.
+# Must mirror moveit_servo::StatusCode (status_codes.h) exactly.
 SERVO_STATUS_INVALID                              = -1
 SERVO_STATUS_OK                                    = 0
 SERVO_STATUS_DECELERATE_FOR_APPROACHING_SINGULARITY = 1
@@ -284,23 +220,13 @@ SERVO_STATUS_NAMES = {
 
 
 class ServoController(Node):
-    """ROS2 node that turns Cartesian velocity commands into MoveIt Servo messages.
-
-    Declares and reads ROS parameters for speed, publish rate, command frame,
-    safe pose and keyboard device path, publishes ``TwistStamped`` messages on
-    a timer, and exposes helper methods to start/stop Servo and to drive the
-    arm to a predefined safe pose via a ``FollowJointTrajectory`` action.
+    """ROS2 node that turns Cartesian velocity commands into MoveIt Servo
+    ``TwistStamped`` messages, with helpers to start/stop Servo and drive
+    the arm to a safe pose via a ``FollowJointTrajectory`` action.
     """
 
     def __init__(self):
-        """Initialize the node, declare parameters, and set up pub/sub/clients.
-
-        Declares all ROS parameters (with defaults), reads their resolved
-        values into instance attributes, zeroes the internal velocity state,
-        creates the twist publisher, the Servo start/stop service clients,
-        the trajectory action client, the publish timer, and the servo
-        status subscription.
-        """
+        """Declare parameters and set up publishers/subscriptions/clients."""
 
         super().__init__('keyboard_servo_node')
 
@@ -327,9 +253,8 @@ class ServoController(Node):
         self.declare_parameter('gripper_stroke', DEFAULT_GRIPPER_STROKE)
         self.declare_parameter('end_effector', 'jaw')
         self.declare_parameter('activity_indicator_topic', DEFAULT_ACTIVITY_INDICATOR_TOPIC)
-        # ERC-mandated at competition (see the constant's own comment) —
-        # defaults to 0.0 (no wait) for bench testing, set explicitly to
-        # ERC_REQUIRED_ACTIVITY_INDICATOR_PRE_DELAY_SEC (5.0) for real runs.
+        # Defaults to 0.0 (no wait) for bench testing; set explicitly to
+        # REQUIRED_ACTIVITY_INDICATOR_PRE_DELAY_SEC (5.0) for real runs.
         self.declare_parameter('activity_indicator_pre_delay_sec', DEFAULT_ACTIVITY_INDICATOR_PRE_DELAY_SEC)
 
         self._linear_speed  = self.get_parameter('linear_speed').value
@@ -515,39 +440,8 @@ class ServoController(Node):
                      hold_boost=1.0):
         """Set the current Cartesian velocity command.
 
-        Args:
-            vx: Linear velocity along global (mount) X, m/s.
-            vy: Linear velocity along global (mount) Y, m/s.
-            vz: Linear velocity along global (mount) Z, m/s.
-            wx: Angular velocity about global X (roll of EEF), rad/s.
-            wy: Angular velocity about global Y (pitch of EEF), rad/s.
-            wz: Angular velocity about global Z (yaw of EEF), rad/s.
-            view_vx: Linear velocity forward/back in ``view_frame``, m/s.
-            view_vy: Linear velocity left/right in ``view_frame``, m/s.
-            view_vz: Linear velocity up/down in ``view_frame``, m/s.
-
-        Notes:
-            Linear velocities are in ``linear_frame`` (default
-            ``arm_mount_link``). Angular velocities are specified in
-            ``ee_frame`` (default ``arm_tcp_link``) and rotated into
-            ``linear_frame`` before publish. Servo's
-            ``robot_link_command_frame`` must match ``linear_frame``.
-
-            The ``view_*`` components are an independent translation set in
-            ``view_frame`` (default ``arm_camera_link``); they are rotated
-            into ``linear_frame`` and *added* to vx/vy/vz, so pressing keys
-            from both sets at once simply sums the two motions.
-
-            The three trailing arguments (plus hold_boost) are keyword-
-            friendly on purpose: ``gamepad_servo_node`` calls this with six
-            positional values and must keep working unchanged.
-
-            hold_boost: Multiplier applied to _orientation_hold's gain/cap
-                for this cycle. Pass the same multiplier used to scale the
-                push (e.g. a held push-boost button) so the wrist's
-                resistance to being bent by reaction torque grows with the
-                push strength instead of staying fixed while the push
-                triples.
+        vx/vy/vz/wx/wy/wz are in ``linear_frame``/``ee_frame``; view_vx/vy/vz
+        are an added, independent translation in ``view_frame``.
         """
         if self._activity_delay_active:
             vx = vy = vz = wx = wy = wz = view_vx = view_vy = view_vz = 0.0
@@ -571,15 +465,8 @@ class ServoController(Node):
         self.gripper_vel = 0.0 if self._activity_delay_active else vel
 
     def set_gripper_target(self, position: float):
-        """Jump the visualized gripper straight to ``position`` (meters).
-
-        For one-shot commands (gamepad SAFE_OPEN/SAFE_CLOSE) instead of
-        the velocity-integrated path set_gripper_velocity() drives.
-        Clamped and picked up by the very next _publish_gripper() tick,
-        same as any other change to _gripper_position — including that
-        method's own "withheld until the first real /joint_states sync"
-        guard, so a press before that arrives doesn't slam a stale
-        default onto gripper_right/left_controller.
+        """Jump the visualized gripper straight to ``position`` (meters),
+        for one-shot commands instead of the velocity-integrated path.
         """
         self._gripper_position = max(0.0, min(self._gripper_stroke, position))
 
@@ -595,25 +482,13 @@ class ServoController(Node):
             self._gripper_state_received = True
 
     def stop(self):
-        """Zero out all velocity components, halting Cartesian and gripper motion.
-
-        Equivalent to calling ``set_velocity()`` with no arguments plus
-        ``set_gripper_velocity(0.0)``. The publish timer keeps running on
-        exit (it's spun on its own thread until destroy_node()), so every
-        exit/stop path — ESC, X, a lost keyboard device, a /joy timeout —
-        must go through this to also stop the gripper, not just the arm.
-        """
+        """Zero out all velocity components, halting Cartesian and gripper motion."""
         self.set_velocity()
         self.set_gripper_velocity(0.0)
         self._hold_quat = None
 
     def _controller_states(self) -> dict:
-        """Return {controller_name: state} via list_controllers, or {} on failure.
-
-        STRICT switching errors on a controller already in its requested
-        state (already active / already inactive), so callers use this to
-        drop no-op entries before asking to switch.
-        """
+        """Return {controller_name: state} via list_controllers, or {} on failure."""
         if not self._list_controllers_client.wait_for_service(timeout_sec=2.0):
             return {}
         done_event = threading.Event()
@@ -634,16 +509,7 @@ class ServoController(Node):
         return states
 
     def _switch_controllers(self, activate, deactivate) -> bool:
-        """Activate/deactivate ros2_control controllers (JTC <-> forward).
-
-        Args:
-            activate: Controllers to activate.
-            deactivate: Controllers to deactivate.
-
-        Returns:
-            True if the switch service reported success, or if every
-            controller was already in its requested state.
-        """
+        """Activate/deactivate ros2_control controllers (JTC <-> forward)."""
         if not self._switch_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('controller_manager/switch_controller unavailable')
             return False
@@ -707,52 +573,15 @@ class ServoController(Node):
         )
 
     def _signal_activity_indicator(self, active: bool) -> None:
-        """Publish the activity-indicator colour (best-effort, never raises).
-
-        ``active`` picks ACTIVITY_INDICATOR_COLOR_ACTIVE (blue) or
-        ACTIVITY_INDICATOR_COLOR_IDLE (off) — see that pair's own comment
-        for why blue and for the caveat that nothing yet turns this into
-        light on real hardware.
-        """
+        """Publish the activity-indicator colour (best-effort, never raises)."""
         r, g, b, a = ACTIVITY_INDICATOR_COLOR_ACTIVE if active else ACTIVITY_INDICATOR_COLOR_IDLE
         msg = ColorRGBA(r=r, g=g, b=b, a=a)
         self._activity_indicator_pub.publish(msg)
 
     def run_planned_activity(self, action, label: str):
-        """Run ``action`` (a zero-arg callable) gated by the ERC-mandated
-        activity-indicator warm-up — the single choke point 'r'/'p'/'f'/'m'
-        and their gamepad equivalents all route their actual move/align/
-        level/orient call through, so REQ-OPS-080/090/100 are satisfied
-        exactly once instead of separately at each call site.
-
-        The wait duration is the ``activity_indicator_pre_delay_sec``
-        parameter, NOT a hardcoded constant — REQ-OPS-090 requires >= 5.0s
-        at actual competition (see ERC_REQUIRED_ACTIVITY_INDICATOR_PRE_DELAY_SEC),
-        but the parameter defaults to 0.0 (no wait at all) for bench
-        testing. Set it explicitly back to 5.0 (or higher) via launch
-        argument / --ros-args -p before any competition run — nothing
-        enforces that automatically.
-
-        Sequence:
-          1. stop() plus _activity_delay_active=True — set_velocity() and
-             set_gripper_velocity() force zero while this is set, so held
-             stick/key input during the wait can't sneak a command through
-             (review-flagged: the sleep alone did not guarantee this).
-          2. Publish the indicator ON (blue).
-          3. Sleep activity_indicator_pre_delay_sec — REQ-OPS-090 at
-             competition; skipped entirely when it's 0.0.
-          4. Clear _activity_delay_active, then call ``action()`` —
-             REQ-OPS-100's "at least 5s after the command was issued" (at
-             competition, where the parameter is actually >= 5.0) — and
-             return whatever it returns.
-          5. Publish the indicator OFF once ``action()`` returns, success or
-             failure alike (``finally``) — REQ-OPS-080's "continue to emit
-             ... until all arm activities are finished".
-
-        Callers are already running this on their own background thread
-        (spawned from ``_read_loop``/``_on_joy``'s button dispatch), so the
-        sleep here does not stall keyboard/joy event processing regardless
-        of how long it's configured to be.
+        """Run ``action`` gated by an activity-indicator warm-up: light on,
+        wait ``activity_indicator_pre_delay_sec``, run the action, light
+        off. Also force-zeroes velocity/gripper commands during the wait.
         """
         delay = self._activity_indicator_pre_delay_sec
         self.get_logger().info(
@@ -770,15 +599,9 @@ class ServoController(Node):
             self._signal_activity_indicator(False)
 
     def stop_servo(self) -> bool:
-        """Call the Servo ``stop_servo`` service and wait for confirmation.
+        """Stop Servo, then re-activate the trajectory controller.
 
-        Waits up to 2 seconds for the service to become available and up to
-        10 seconds for the asynchronous call to complete. After Servo stops,
-        re-activates the trajectory controller so home / Execute can run.
-
-        Returns:
-            bool: True if Servo stopped AND the trajectory controller took
-            over; False otherwise.
+        Returns True if Servo stopped AND the controller switch succeeded.
         """
         if not self._stop_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().warn('Servo stop service not available')
@@ -787,7 +610,6 @@ class ServoController(Node):
         done_event = threading.Event()
 
         def _cb(future):
-            """Mark the stop-servo call as complete (service response callback)."""
             done_event.set()
 
         future = self._stop_client.call_async(Trigger.Request())
@@ -801,27 +623,7 @@ class ServoController(Node):
         return self.use_trajectory_controller()
 
     def move_to_safe_pose(self, positions=None, name=None):
-        """Stop motion and drive the arm to the configured home pose.
-
-        Halts current velocity commands, confirms Servo has stopped and
-        the trajectory controller is active, then delegates the actual
-        move to ``_move_to_joint_positions``.
-
-        Args:
-            positions: Joint targets to use instead of ``self._safe_pose``
-                (same order as ``HOME_POSE_JOINTS``). Defaults to
-                ``self._safe_pose`` when omitted.
-            name: Label for the log line only (defaults to
-                ``self._home_pose_name``); has no effect on motion.
-
-        Returns:
-            bool: True if the controller reported the goal SUCCEEDED with
-            error code SUCCESSFUL; False if Servo could not be confirmed
-            stopped, the trajectory controller could not be activated, the
-            action server was unavailable, the goal was rejected, the
-            trajectory was aborted/canceled or finished with a controller
-            error, or no result arrived within the timeout.
-        """
+        """Stop motion, confirm Servo/JTC are ready, and move to the home pose."""
         target_positions = list(self._safe_pose) if positions is None else list(positions)
         target_name = self._home_pose_name if name is None else name
 
@@ -842,30 +644,9 @@ class ServoController(Node):
         return self._move_to_joint_positions(target_positions, f'home ({target_name})')
 
     def _move_to_joint_positions(self, target_positions, label: str) -> bool:
-        """Plan (OMPL, collision-checked) and execute a move from the
-        current joint state to ``target_positions``, then wait — a raw
-        point-to-point move can't tell whether the straight-line path to
-        the target is actually clear. Callers are responsible for
-        ``stop()``/``stop_servo()``/switching to the trajectory controller
-        first.
-
-        Non-blocking-locked (``_motion_lock``) rather than queued: two 'r'
-        presses racing (see the lock's declaration in ``__init__``) should
-        fail one of them cleanly, not silently submit a second goal that
-        preempts the first mid-motion. ``_motion_lock`` alone only protects
-        against racing WITHIN this process though — also takes
-        ``arm_motion_lock()`` (see that module) so a home move here can't
-        race another process holding the same cross-process lock.
-
-        Blocks the calling thread up to ``safe_pose_timeout`` wall-clock
-        seconds (<= 0 waits forever).
-
-        Returns:
-            bool: True if the controller reported the goal SUCCEEDED with
-            error code SUCCESSFUL; False if another motion was already in
-            progress, the action server was unavailable, the goal was
-            rejected, the trajectory was aborted/canceled or finished with
-            a controller error, or no result arrived within the timeout.
+        """Plan (OMPL, collision-checked) and execute a move to
+        ``target_positions``, guarded by both an in-process lock and the
+        cross-process ``arm_motion_lock()`` so two callers can't race.
         """
         if not self._motion_lock.acquire(blocking=False):
             self.get_logger().error(
@@ -905,17 +686,7 @@ class ServoController(Node):
     def _execute_move_group_constraints(self, constraints: Constraints) -> tuple[bool, str]:
         """Plan and execute a single move_action goal for ``constraints``.
 
-        Used by ``move_to_safe_pose()``. Returns ``(success, error)`` —
-        ``error`` is empty on success, otherwise a
-        short description (goal rejected, no result within the timeout, or
-        the MoveIt status/error code on failure).
-
-        Speed comes from the ``plan_execute_velocity_scaling``/
-        ``plan_execute_acceleration_scaling`` params (fraction of each
-        joint's own max_velocity/max_acceleration in joint_limits.yaml) —
-        raise them if A/B/Y home moves feel slow or jerky (low acceleration
-        in particular reads as jerkiness), lower them again if a move
-        overshoots/oscillates or feels unsafe near people.
+        Returns ``(success, error)``; ``error`` is empty on success.
         """
         goal = MoveGroup.Goal()
         goal.request.group_name = MOVEIT_GROUP_NAME
@@ -935,7 +706,6 @@ class ServoController(Node):
         goal_handle_box = {}
 
         def result_cb(future):
-            """Record the move_group result's status and MoveIt error code."""
             try:
                 wrapped = future.result()
                 result = wrapped.result
@@ -953,7 +723,6 @@ class ServoController(Node):
                 done_event.set()
 
         def goal_response_cb(future):
-            """Handle move_action's goal-acceptance response."""
             try:
                 goal_handle = future.result()
             except Exception as e:
@@ -987,13 +756,7 @@ class ServoController(Node):
     def start_servo(self) -> bool:
         """Switch to streaming controller, then start MoveIt Servo.
 
-        Waits up to 2 seconds for the service to become available and up to
-        20 seconds for the call to complete. Falls back to the trajectory
-        controller on any failure, so the joints are never left claimed by
-        the streaming controller with Servo not actually running.
-
-        Returns:
-            bool: True if Servo confirmed it started.
+        Falls back to the trajectory controller on any failure.
         """
         if not self.use_streaming_controller():
             self.get_logger().error(
@@ -1036,16 +799,8 @@ class ServoController(Node):
     def _on_servo_status(self, msg: Int8):
         """Handle incoming Servo status updates.
 
-        Automatically restarts Servo only when the status transitions into
-        SERVO_STATUS_HALT_FOR_SINGULARITY, since that halt is typically
-        recoverable by re-issuing start_servo (Servo re-attempts the motion
-        away from the singular configuration). Other halt states — e.g.
-        SERVO_STATUS_HALT_FOR_COLLISION — are intentionally NOT
-        auto-recovered: they represent conditions where continuing motion
-        could be unsafe, so they are left for the operator to resolve
-        manually (e.g. by moving the arm clear via keyboard input, or a
-        workspace/collision object review) rather than being silently
-        retried.
+        Auto-restarts Servo only on SERVO_STATUS_HALT_FOR_SINGULARITY;
+        other halts (e.g. collision) are left for the operator to resolve.
         """
         code = msg.data
         if code != self._servo_status:
@@ -1065,14 +820,7 @@ class ServoController(Node):
     def _linear_in_command_frame(self):
         """Sum mount-frame and view-frame translation, both in ``linear_frame``.
 
-        The view-frame part is resolved through TF on every publish rather
-        than once at key-press, so "forward" tracks the camera as the arm
-        moves.
-
-        Returns:
-            tuple[float, float, float]: (vx, vy, vz) in ``linear_frame``.
-            If TF is unavailable only the mount-frame part is returned, so
-            W/S/A/D/Q/E keep working when the view frame does not resolve.
+        Falls back to the mount-frame part alone if TF is unavailable.
         """
         if (self.view_vx == 0.0 and self.view_vy == 0.0
                 and self.view_vz == 0.0):
@@ -1101,11 +849,8 @@ class ServoController(Node):
         return self.vx + rx, self.vy + ry, self.vz + rz
 
     def _angular_in_command_frame(self):
-        """Map EEF-frame angular velocity into ``linear_frame`` via TF.
-
-        Returns:
-            tuple[float, float, float]: (wx, wy, wz) in ``linear_frame``.
-            If TF is unavailable, returns (0, 0, 0).
+        """Map EEF-frame angular velocity into ``linear_frame`` via TF, or
+        (0, 0, 0) if TF is unavailable.
         """
         if self.wx == 0.0 and self.wy == 0.0 and self.wz == 0.0:
             return 0.0, 0.0, 0.0
@@ -1133,10 +878,6 @@ class ServoController(Node):
 
         Does not scale linear speed. I/K/U/O/J/L still command rotation.
         """
-        # View-relative input translates just as much as W/S/A/D/Q/E does, so
-        # the attitude hold has to engage for it too — otherwise view-relative
-        # moves would be the one path where TCP orientation is left to walk
-        # freely.
         driving_lin = (
             abs(self.vx) > HOLD_CMD_EPS or abs(self.vy) > HOLD_CMD_EPS or
             abs(self.vz) > HOLD_CMD_EPS or
@@ -1179,15 +920,8 @@ class ServoController(Node):
         return wx, wy, wz
 
     def _publish(self):
-        """Publish twist in ``linear_frame`` (mount).
-
-        Mount XYZ as-is, view-frame XYZ and EEF ω rotated in via TF.
-
-        Servo ``robot_link_command_frame`` must equal ``linear_frame``.
-        Publishing Cartesian velocity in the TCP frame was observed to
-        produce almost no joint motion for mount-aligned X; mount-frame
-        twists move the EEF correctly. The view-relative keys therefore
-        resolve to mount here instead of switching the published frame.
+        """Publish twist in ``linear_frame`` (mount): mount XYZ as-is,
+        view-frame XYZ and EEF angular velocity rotated in via TF.
         """
         vx, vy, vz = self._linear_in_command_frame()
         wx, wy, wz = self._angular_in_command_frame()
@@ -1209,16 +943,8 @@ class ServoController(Node):
     def _publish_gripper(self):
         """Integrate gripper position from ``gripper_vel`` and publish.
 
-        Withheld entirely until the first /joint_states sync (see
-        _gripper_position above) — otherwise this would command the
-        default-assumed 0.0 (closed) from the very first tick, which on a
-        restart while the real gripper is open would slam it shut before
-        any real state ever arrived.
-
-        Runs every publish tick (100Hz) for smooth motion. Right and left
-        each have their own single-joint controller (see GRIPPER_JOINT_NAME
-        above) and are published separately every time; left is always
-        -right.
+        Withheld until the first /joint_states sync so a restart can't
+        slam the gripper shut before real state arrives.
         """
         if not self._gripper_state_received:
             return
@@ -1262,12 +988,7 @@ HELP = """
 
 
 class KeyboardInputLoop:
-    """Reads raw keyboard events via evdev and drives a ``ServoController``.
-
-    Maintains the set of currently pressed direction keys, recomputes the
-    combined Cartesian velocity whenever the set changes, and handles the
-    special "safe pose" and "exit" key bindings.
-    """
+    """Reads raw keyboard events via evdev and drives a ``ServoController``."""
 
     _DIRECTIONS = {
         ecodes.KEY_W: ( 1.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0),
@@ -1296,12 +1017,7 @@ class KeyboardInputLoop:
     _KEYSTATE_REPEAT = 2
 
     def __init__(self, controller: 'ServoController'):
-        """Store a reference to the controller and initialize input state.
-
-        Args:
-            controller: The ``ServoController`` node that will receive
-                velocity commands derived from keyboard input.
-        """
+        """Store a reference to the controller and initialize input state."""
         self._controller = controller
         self._linear_speed = controller.linear_speed
         self._angular_speed = controller.angular_speed
@@ -1317,14 +1033,8 @@ class KeyboardInputLoop:
         self._safe_pose_running = threading.Lock()
 
     def _open_device(self) -> bool:
-        """Open evdev keyboard(s) for teleop.
-
-        ``keyboard_device_path:=auto`` (default) opens every QWERTY-capable
-        keyboard and merges events. Pinning only ``/dev/input/event3`` (laptop
-        AT keyboard) while typing on a Keychron produced zero key events.
-
-        Returns:
-            bool: True if at least one device opened.
+        """Open evdev keyboard(s) for teleop; ``auto`` merges every QWERTY
+        keyboard found. Returns True if at least one device opened.
         """
         requested = (self._device_path or '').strip()
         if requested and requested.lower() != 'auto':
@@ -1343,7 +1053,6 @@ class KeyboardInputLoop:
         for path in paths:
             try:
                 device = evdev.InputDevice(path)
-                # Older python-evdev has no set_nonblocking(); use fcntl.
                 flag = fcntl.fcntl(device.fd, fcntl.F_GETFL)
                 fcntl.fcntl(device.fd, fcntl.F_SETFL, flag | os.O_NONBLOCK)
             except (FileNotFoundError, PermissionError, OSError) as e:
@@ -1366,13 +1075,7 @@ class KeyboardInputLoop:
         return True
 
     def _recompute_velocity(self):
-        """Recompute and apply the combined velocity from all pressed keys.
-
-        Sums the per-axis direction vectors of every currently pressed key
-        in ``self._pressed``, scales the result by the controller's linear
-        and angular speed settings, and forwards it to
-        ``ServoController.set_velocity``.
-        """
+        """Recompute and apply the combined velocity from all pressed keys."""
         vx = vy = vz = wx = wy = wz = 0.0
         cvx = cvy = cvz = 0.0
         with self._lock:
@@ -1408,14 +1111,7 @@ class KeyboardInputLoop:
     def _handle_safe_pose(self):
         """Clear pressed keys, stop motion, and move to the safe pose.
 
-        Servo is only started if the safe-pose move actually succeeded;
-        starting it after a rejected/aborted/timed-out move would let the
-        operator resume Cartesian teleop from a pose that never reached the
-        intended safe configuration.
-
-        Intended to run in its own thread (spawned from ``_read_loop``) so
-        that the blocking safe-pose and servo-start calls do not stall
-        keyboard event processing.
+        Servo is only started if the safe-pose move actually succeeded.
         """
         if not self._safe_pose_running.acquire(blocking=False):
             return
@@ -1508,8 +1204,6 @@ class KeyboardInputLoop:
                                 if not already_pressed:
                                     self._recompute_velocity()
                                     key_name = ecodes.KEY[code].removeprefix('KEY_').lower()
-                                    # view_* included or t/g would report
-                                    # all-zero and look like a no-op.
                                     print(
                                         f'{key_name} vx={self._controller.vx:.2f} '
                                         f'vy={self._controller.vy:.2f} '
@@ -1540,14 +1234,7 @@ class KeyboardInputLoop:
             self._exit_event.set()
 
     def run(self):
-        """Open the keyboard device and run the input loop until exit.
-
-        Opens the evdev device (returning early if this fails), prints the
-        help banner, disables terminal echo where possible, starts the
-        event-reading loop in a daemon thread, and blocks until the exit
-        event is set. On exit, stops the controller's motion and restores
-        the original terminal settings.
-        """
+        """Open the keyboard device and run the input loop until exit."""
         if not self._open_device():
             return
         print(HELP, flush=True)
@@ -1608,28 +1295,12 @@ GAMEPAD_HELP = """
 class GamepadInputLoop:
     """Reads sensor_msgs/Joy messages and drives a ``ServoController``.
 
-    Replaces the raw-keyboard evdev input of ``KeyboardInputLoop`` with a
-    subscription to the ``joy`` package's ``/joy`` topic — as this module's
-    docstring already promises, ``ServoController`` itself needs no changes.
-
     Launch via ``arm_teleop/launch/gamepad.launch.py``, which starts
-    ``game_controller_node`` (not plain ``joy_node``): it maps raw HID
-    reports through SDL's GameController DB into a fixed canonical index
-    order (A=0, X=2, LEFTSHOULDER=9, RIGHTSHOULDER=10, DPAD_UP=11,
-    DPAD_LEFT=13, ... — same on every machine/controller SDL recognizes),
-    instead of joy_node's raw per-device layout, which was observed to
-    shift index depending on kernel/Bluetooth stack even for the identical
-    physical pad. The indices below match that canonical table directly.
-
-    Trigger axes (4/5) still get a per-axis rest sample while sticks are
-    centered (``_trigger_amount``) as a safety net — GameController's
-    TRIGGERLEFT/TRIGGERRIGHT are specified to rest at 0.0, but this costs
-    nothing if that already holds.
+    ``game_controller_node`` for a stable, SDL-mapped button/axis layout.
     """
 
-    # Gamepad translation is view-relative (camera frame), not mount-frame —
-    # the operator is looking through the camera, so "forward" should follow
-    # it. Mount-frame XYZ stays available on the keyboard.
+    # Gamepad translation is view-relative (camera frame); mount-frame
+    # XYZ stays available on the keyboard only.
     AXIS_LEFT_X = 0     # view +Y / -Y  (left / right)
     AXIS_LEFT_Y = 1     # view +X / -X  (forward / back)
     AXIS_RIGHT_X = 2    # yaw (-wy)     — roll  (-wz) while R1 held
@@ -1639,17 +1310,8 @@ class GamepadInputLoop:
 
     BUTTON_SAFE_POSE = 0    # 'A' — move to home + start servo
     BUTTON_EXIT = 2         # 'X' — exit
-    # LEFTSHOULDER/L1. Held to scale up commanded velocity — raises the
-    # per-cycle position step Servo re-anchors from, which is what caps
-    # static push force (not kp/kd).
-    BUTTON_PUSH_BOOST = 9
-    # Bounded by max_cmd_speed_rad_s (arm_macro.xacro): the hardware
-    # interface rate-limits actual motion to that many rad/s regardless
-    # of what Servo asks for, so beyond a certain multiplier this stops
-    # helping and max_cmd_speed_rad_s becomes the real ceiling instead.
+    BUTTON_PUSH_BOOST = 9   # LEFTSHOULDER/L1 — scales up commanded velocity
     PUSH_BOOST_MULTIPLIER = 3.0
-    # Shift button has no class constant — parameterized (DEFAULT_GAMEPAD_SHIFT_BUTTON),
-    # read via self._shift_button, in case a pad's SDL mapping is ever wrong.
 
     BUTTON_GRIPPER_OPEN = 11
     BUTTON_GRIPPER_CLOSE = 13
@@ -1659,16 +1321,7 @@ class GamepadInputLoop:
     _WATCHDOG_PERIOD_SEC = 0.1
 
     def __init__(self, controller: 'ServoController'):
-        """Store a reference to the controller and subscribe to ``/joy``.
-
-        Args:
-            controller: The ``ServoController`` node that will receive
-                velocity commands derived from gamepad input. Its own
-                ``create_subscription`` is reused for the ``/joy`` topic
-                so the callback runs on the node's existing executor —
-                no separate thread is needed, unlike the keyboard's
-                blocking evdev read loop.
-        """
+        """Store a reference to the controller and subscribe to ``/joy``."""
         self._controller = controller
         self._linear_speed = controller.linear_speed
         self._angular_speed = controller.angular_speed
@@ -1725,11 +1378,8 @@ class GamepadInputLoop:
     def _trigger_amount(self, axes, index: int) -> float:
         """Return how far a trigger (L2/R2) is pressed: 0.0 .. 1.0.
 
-        Supports both common rest conventions on this Stadia over ``joy_node``:
-        rest near +1 (press toward -1) and rest near 0 (press toward ±1).
-        Before calibration, only the +1-rest formula is used, and a raw
-        value near 0 is treated as released — otherwise an uncalibrated
-        0-rest R2 looks like a constant half-press (wz ≈ 0.5 * angular).
+        Supports both rest conventions: rest near +1 (press toward -1)
+        and rest near 0 (press toward +/-1).
         """
         if index >= len(axes):
             return 0.0
@@ -1737,17 +1387,13 @@ class GamepadInputLoop:
         rest = self._trigger_rest.get(index)
 
         if rest is None:
-            # Uncalibrated: never treat raw≈0 as a half-press (0-rest R2
-            # phantom). Full +1-rest presses still register via raw≤-0.5.
             if raw >= 0.5 or raw <= -0.5:
                 amount = (1.0 - raw) / 2.0
             else:
                 amount = 0.0
         elif rest > 0.5:
-            # Classic: +1 released → -1 fully pressed.
             amount = (rest - raw) / (rest - (-1.0))
         else:
-            # Rest near 0: any deflection toward ±1 is a press.
             amount = abs(raw - rest)
 
         if amount < 0.0:
@@ -1761,12 +1407,7 @@ class GamepadInputLoop:
         return index < len(buttons) and buttons[index] == 1
 
     def _button_rising_edge(self, buttons, index: int) -> bool:
-        """Return True if ``buttons[index]`` was just pressed this message.
-
-        Requires a real previous reading — see ``_prev_buttons`` in
-        ``__init__`` for why ``None`` (no baseline yet) always reports
-        no edge rather than comparing against an assumed all-zero state.
-        """
+        """Return True if ``buttons[index]`` was just pressed this message."""
         if self._prev_buttons is None:
             return False
         was_pressed = index < len(self._prev_buttons) and self._prev_buttons[index] == 1
@@ -1775,8 +1416,6 @@ class GamepadInputLoop:
     @staticmethod
     def _active_label(view_vx, view_vy, view_vz, wx, wy, wz, shift: bool) -> str:
         """Describe which physical control(s) are driving a nonzero command."""
-        # wy (yaw) only ever comes from the plain right stick, wx/wz (pitch/
-        # roll) only from the shifted one — so the axes identify the source.
         parts = []
         if view_vx or view_vy:
             parts.append('left stick')
@@ -1789,15 +1428,7 @@ class GamepadInputLoop:
     def _check_joy_timeout(self):
         """Stop the arm if no ``/joy`` message has arrived recently.
 
-        Runs on the node's own timer, independent of message arrival, so
-        a disconnected controller or a dead ``joy_node`` can't
-        leave the last commanded velocity republishing forever — Servo's
-        own command timeout does not help here because ServoController
-        keeps re-publishing that last twist every tick regardless of
-        whether new input has arrived. This only zeroes the current
-        command; it does not lock teleop out, so control resumes on its
-        own the moment ``/joy`` messages start arriving again (e.g. a
-        Bluetooth reconnect) — no separate re-arm step.
+        Control resumes automatically once ``/joy`` messages return.
         """
         if self._last_joy_time is None:
             return
@@ -1903,9 +1534,6 @@ class GamepadInputLoop:
         if not self._trigger_rest and self._sticks_centered(axes):
             self._calibrate_triggers(axes)
 
-        # Held BUTTON_PUSH_BOOST scales up the commanded velocity — see its
-        # comment for why that's what actually raises the arm's static
-        # push force against resistance, not kp/kd/gravity-ff.
         boost = (self.PUSH_BOOST_MULTIPLIER
                  if self._button_pressed(buttons, self.BUTTON_PUSH_BOOST) else 1.0)
         linear_speed = self._linear_speed * boost
@@ -1930,8 +1558,6 @@ class GamepadInputLoop:
             view_vz = -right_y * linear_speed      # stick up = view +Z
             wy = -right_x * angular_speed         # yaw
 
-        # Mount-frame translation is unused here — every gamepad axis is
-        # view-relative or a rotation.
         self._controller.set_velocity(
             0.0, 0.0, 0.0, wx, wy, wz,
             view_vx=view_vx, view_vy=view_vy, view_vz=view_vz,
@@ -1948,17 +1574,7 @@ class GamepadInputLoop:
     def _handle_safe_pose(self):
         """Stop motion and move to the safe pose (mirrors KeyboardInputLoop's 'r').
 
-        Guarded by a non-blocking lock so a second button press while a
-        move is already in progress is ignored instead of racing a
-        redundant safe-pose goal against the first. Also sets
-        ``_safe_pose_active`` for the duration so ``_on_joy`` ignores
-        stick/trigger input while it's set — otherwise a stick held
-        during the move would resume Cartesian motion the instant
-        ``start_servo()`` re-enables Servo, before the operator has a
-        chance to let go.
-
-        This is also the only place ``_teleop_locked`` is cleared (see
-        its declaration in ``__init__``).
+        Guarded by a non-blocking lock against a second concurrent press.
         """
         if not self._safe_pose_running.acquire(blocking=False):
             return
@@ -1996,10 +1612,7 @@ class GamepadInputLoop:
 def _run_teleop(controller: 'ServoController', input_loop) -> None:
     """Spin ``controller`` in a background thread and run ``input_loop`` until exit.
 
-    Shared by ``main`` (keyboard) and ``main_gamepad`` (gamepad): both
-    input loops expose the same ``run()`` contract (block until an exit
-    condition, leave the controller stopped), so the ROS lifecycle
-    around them doesn't need to be duplicated per input source.
+    Shared by ``main`` (keyboard) and ``main_gamepad`` (gamepad).
     """
     spin_thread = threading.Thread(target=rclpy.spin, args=(controller,), daemon=True)
     spin_thread.start()

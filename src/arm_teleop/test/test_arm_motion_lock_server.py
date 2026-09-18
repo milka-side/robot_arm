@@ -1,8 +1,5 @@
-"""arm_motion_lock_server.py's own acquire/release arbitration — a
-lease-based state machine, tested directly against its internal
-_on_acquire/_on_release handlers (same rationale as this repo's other
-internal-method tests: no real service transport needed to exercise the
-logic that actually matters).
+"""arm_motion_lock_server.py's lease-based arbitration, tested directly
+against its internal _on_acquire/_on_release handlers.
 """
 import pytest
 

@@ -57,6 +57,27 @@ this sim stack runs without a namespace.
 ros2 run arm_teleop keyboard_servo_node
 ```
 
+### Key bindings
+
+Keyboard (EEF translation is mount-frame; rotation is about the TCP):
+| Key | Action |
+|---|---|
+| w/s, a/d, q/e | +/- X, Y, Z translation |
+| t/g | view-relative up/down |
+| i/k, u/o, j/l | pitch, yaw, roll |
+| b/v | gripper open/close |
+| r | move to home + start servo |
+| ESC/x | exit |
+
+Gamepad (all translation/rotation is view-relative):
+| Control | Action |
+|---|---|
+| Left stick | forward/back, left/right |
+| Right stick | up/down, yaw |
+| R1 + right stick | pitch, roll |
+| A | move to home + start servo |
+| X | exit |
+
 ## Sanity check
 
 - Gazebo opens, the arm is visible, controllers are active (`spawner` log).

@@ -68,10 +68,8 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
-    # Sim is single-host, but its motion-control clients still run as
-    # separate processes here too — bring up the same lock server the
-    # real cross-host deployment needs, so sim actually exercises the
-    # real locking path instead of silently having none.
+    # Brings up the same lock server the real deployment needs, so sim
+    # exercises the real locking path too.
     arm_motion_lock_server = Node(
         package="arm_teleop",
         executable="arm_motion_lock_server",
@@ -92,8 +90,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # Streaming teleop controller, spawned inactive — JTC owns the joints
-    # until arm_teleop switches controllers for Servo. Mirrors arm_bringup/arm.launch.py;
-    # a separate spawner call because --inactive applies to the whole call.
+    # until arm_teleop switches controllers for Servo.
     forward_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -150,14 +147,8 @@ def generate_launch_description() -> LaunchDescription:
         )
     )
 
-    # planning_pipelines restricted to ompl on purpose: with none of the
-    # config yaml files it discovers for chomp/pilz_industrial_motion_planner
-    # actually present in this package (only ompl_planning.yaml exists),
-    # letting MoveItConfigsBuilder auto-load its bundled default configs
-    # for all three still left move_group picking an ambiguous
-    # "planning_plugin" between them ("Multiple planning plugins
-    # available... Using 'chomp_interface/CHOMPPlanner' for now" — even
-    # when the request explicitly asked for the 'ompl' pipeline_id).
+    # planning_pipelines restricted to ompl on purpose — otherwise
+    # move_group picks an ambiguous default planning plugin.
     moveit_config = MoveItConfigsBuilder(
         "robot_arm", package_name="arm_moveit_config"
     ).planning_pipelines(pipelines=["ompl"]).to_moveit_configs()
@@ -168,8 +159,8 @@ def generate_launch_description() -> LaunchDescription:
         servo_yaml = yaml.safe_load(f)
     servo_params = {"moveit_servo": servo_yaml["moveit_servo"]["ros__parameters"]}
 
-    # Inverse Jacobian only — see arm_bringup/arm.launch.py (KDL searchPositionIK
-    # from home makes +X teleop freeze while -X still works).
+    # Inverse Jacobian only — KDL searchPositionIK from home makes +X
+    # teleop freeze while -X still works.
     servo_node = Node(
         package="moveit_servo",
         executable="servo_node_main",

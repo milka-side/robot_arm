@@ -10,12 +10,7 @@ from moveit_configs_utils.launches import generate_moveit_rviz_launch
 
 
 def generate_launch_description() -> LaunchDescription:
-    """Gazebo sim plus RViz in one launch.
-
-    Thin wrapper: includes arm_gazebo.launch.py unchanged (Gazebo,
-    ros2_control, move_group, servo) and adds the same RViz setup that
-    arm_moveit_config's moveit_rviz.launch.py provides.
-    """
+    """Gazebo sim plus RViz in one launch."""
     arm_sim_dir = get_package_share_directory("arm_sim")
 
     gazebo_launch = IncludeLaunchDescription(

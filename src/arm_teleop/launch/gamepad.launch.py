@@ -17,10 +17,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'dev': joy_dev,
-            # Must stay 0.0 — game_controller_node stops publishing /joy
-            # entirely once its own deadzone swallows resting-stick noise
-            # (ros-drivers/joystick_drivers#304). Deadzone is applied in
-            # GamepadInputLoop (_DEADZONE) instead.
+            # Must stay 0.0 — deadzone is applied in GamepadInputLoop instead.
             'deadzone': ParameterValue(0.0, value_type=float),
         }],
         respawn=True,
@@ -46,13 +43,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'end_effector',
             default_value='jaw',
-            description=(
-                "Which tool is physically mounted right now: 'jaw', "
-                "'drill_sampling', or 'astrobio'. Gates the A/B/Y mode-jump "
-                'buttons in gamepad_servo_node — match this to what you '
-                'actually launched the arm with (arm.launch.py '
-                'end_effector:=...).'
-            ),
+            description="Which tool is physically mounted (e.g. 'jaw').",
         ),
         game_controller_node,
         gamepad_servo_node,
