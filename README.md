@@ -57,6 +57,16 @@ this sim stack runs without a namespace.
 ros2 run arm_teleop keyboard_servo_node
 ```
 
+**RViz alone, no Gazebo:**
+```bash
+# While a sim is already running (arm_gazebo.launch.py in another terminal):
+ros2 launch arm_moveit_config moveit_rviz.launch.py
+
+# Or with no sim at all — robot_state_publisher + joint_state_publisher_gui
+# (drag sliders to move joints) + RViz:
+ros2 launch arm_moveit_config display.launch.py
+```
+
 ### Key bindings
 
 Keyboard (EEF translation is mount-frame; rotation is about the TCP):
