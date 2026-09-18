@@ -4,8 +4,7 @@ Gazebo physics simulation of a robotic arm with gamepad teleop control and
 RViz visualization. Self-contained set of ROS2 packages, runnable standalone
 via Docker.
 
-This build only includes the standard jaw gripper (drill/sampling/astrobio
-tools are removed from the URDF), no panel and no camera.
+The arm ships with a standard jaw gripper end effector.
 
 ## Structure
 
@@ -60,8 +59,7 @@ ros2 run arm_teleop keyboard_servo_node
 
 ## Sanity check
 
-- Gazebo opens, the arm (jaw gripper only, no drill/sampling/panel/camera) is
-  visible, controllers are active (`spawner` log).
+- Gazebo opens, the arm is visible, controllers are active (`spawner` log).
 - RViz shows the robot model in sync with Gazebo (same `/joint_states`).
 - Moving the gamepad sticks actually moves the arm in Gazebo and in RViz at
   the same time.
