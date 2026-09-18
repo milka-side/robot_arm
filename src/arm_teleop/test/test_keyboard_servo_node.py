@@ -1,13 +1,7 @@
 """Gripper sync/gating/limits and safe-pose gripper reset.
 
-Internal methods (_on_joint_state, _publish_gripper, _handle_safe_pose,
-...) are called directly rather than round-tripped through real pub/sub
-or a running Gazebo/controller_manager, since the behavior under test
-lives entirely in this node's own state machine — feeding it through the
-real /joint_states topic would also reintroduce a genuine flakiness trap
-found while verifying this by hand: against a busy topic (e.g. a live sim
-publishing at 100Hz), rclpy.spin_once can starve this node's own publish
-timer indefinitely and report a false failure.
+Internal methods are called directly rather than through real pub/sub
+or a running Gazebo/controller_manager.
 """
 import contextlib
 import json
@@ -62,15 +56,8 @@ def make_joy(axes=None, buttons=None):
 
 
 def publish_ticks(controller, n=5, dt=0.05):
-    """Call _publish_gripper() n times with a fixed, simulated tick interval.
-
-    The very first call after a velocity is set never moves anything (no
-    prior tick to diff a dt against — see _publish_gripper), so this backdates
-    _last_gripper_tick_time by exactly ``dt`` before every later call instead
-    of relying on the real (near-zero, runner-speed-dependent) wall-clock gap
-    between back-to-back calls in a tight loop — otherwise this is flaky:
-    locally the gap may happen to accumulate enough dt to reach the clamp,
-    but on a faster/slower CI runner it may not.
+    """Call _publish_gripper() n times with a fixed, simulated tick interval
+    (avoids CI-runner-speed-dependent flakiness from real wall-clock gaps).
     """
     for _ in range(n):
         if controller._last_gripper_tick_time is not None:
@@ -146,9 +133,6 @@ def test_gripper_first_tick_after_sync_holds_instead_of_jumping(controller):
     controller._on_joint_state(make_joint_state(0.008))
     controller.set_gripper_velocity(-0.006)
     controller._publish_gripper()
-    # No prior tick to diff a dt against yet, so this tick only records the
-    # timestamp — it does not guess a dt and move (that would risk a jump
-    # from the synced value on a slow first tick).
     assert controller._gripper_position == pytest.approx(0.008)
 
 
@@ -310,8 +294,7 @@ def test_gamepad_no_timeout_when_joy_recently_seen(controller):
     assert controller.vx == 999.0  # untouched: no timeout yet
 
 
-# ── move_to_safe_pose() must be collision-aware (review: not raw JTC) ──
-# _FakeFuture is the one defined near the top of this file.
+# ── move_to_safe_pose() must be collision-aware (not raw JTC) ──
 
 class _NeverResolvingFuture:
     """Simulates a goal handle whose result callback never arrives."""
@@ -336,9 +319,7 @@ class _FakeGoalHandle:
 def test_move_to_safe_pose_uses_collision_aware_planning(controller, monkeypatch):
     monkeypatch.setattr(controller, 'stop_servo', lambda: True)
     monkeypatch.setattr(controller, 'use_trajectory_controller', lambda: True)
-    # arm_motion_lock() now calls a real ROS service (arm_motion_lock_server)
-    # — no such server in this unit test, so bypass it like every other
-    # cross-node call in this file.
+    # No arm_motion_lock_server running in this unit test — bypass it.
     monkeypatch.setattr(
         'arm_teleop.keyboard_servo_node.arm_motion_lock',
         lambda *a, **kw: contextlib.nullcontext())
@@ -354,7 +335,6 @@ def test_move_to_safe_pose_uses_collision_aware_planning(controller, monkeypatch
     assert len(calls) == 1
     got = {jc.joint_name: jc.position for jc in calls[0].joint_constraints}
     assert got == dict(zip(HOME_POSE_JOINTS, target))
-    # The raw FollowJointTrajectory path this used to take is gone entirely.
     assert not hasattr(controller, '_traj_client')
 
 
@@ -367,13 +347,10 @@ def test_execute_move_group_constraints_cancels_goal_on_timeout(controller, monk
 
     assert ok is False
     assert 'timed out' in error
-    # Critical: leaving this goal running server-side after reporting
-    # failure would let the arm keep moving under it once the caller
-    # (believing the move failed) switches controllers/restarts Servo.
     assert gh.cancel_calls == 1
 
 
-# ── run_planned_activity() must keep the arm still for the full 5s ─────
+# ── run_planned_activity() must keep the arm still for the full delay ──
 
 def test_set_velocity_forced_to_zero_during_activity_delay(controller):
     controller._activity_delay_active = True
@@ -406,7 +383,7 @@ def test_run_planned_activity_holds_input_suppressed_for_the_whole_sleep(control
     assert controller._activity_delay_active is False  # cleared once action() runs
 
 
-# ── review: a taught pose must never carry a NaN/inf value onward ──────
+# ── a taught pose must never carry a NaN/inf value onward ──────────────
 
 def test_load_home_pose_from_json_rejects_non_finite_values(monkeypatch):
     from arm_teleop.keyboard_servo_node import HOME_POSE_JOINTS, _load_home_pose_from_json

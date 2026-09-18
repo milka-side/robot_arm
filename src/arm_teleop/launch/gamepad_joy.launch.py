@@ -18,10 +18,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'dev': joy_dev,
-            # Must stay 0.0 — game_controller_node stops publishing /joy
-            # entirely once its own deadzone swallows resting-stick noise
-            # (ros-drivers/joystick_drivers#304). Deadzone is applied in
-            # GamepadInputLoop (_DEADZONE) instead.
+            # Must stay 0.0 — deadzone is applied in GamepadInputLoop instead.
             'deadzone': ParameterValue(0.0, value_type=float),
         }],
         respawn=True,

@@ -1,21 +1,9 @@
 """Cross-host mutual exclusion for anything that submits a goal to
 ``robot_arm_controller`` (the JTC).
 
-Different clients that submit motion goals (e.g. ``keyboard_servo_node.py``'s
-home move / remembered-position replay, or another controller-node's live
-align) are separate PROCESSES — and can run on separate HOSTS (operator
-control from one machine, planning/execution served from another) — each
-perfectly happy to submit a FollowJointTrajectory-family goal to the same
-action server. Confirmed live: two such clients racing each other let both
-through, racing two goals onto the same controller (see PR review — this is
-what this module fixes). Each side already has its own in-process
-``threading.Lock`` guarding against racing ITSELF; a plain ``threading.Lock``
-only ever protects within the one process that created it, and a ``flock``
-(this module's original implementation) only ever protects within the one
-HOST it runs on — neither covers one host commanding the arm while another
-host's code also does. A ROS service, hosted once by
-``arm_motion_lock_server.py`` alongside the controller it actually
-arbitrates, is reachable from either host.
+A plain ``threading.Lock``/``flock`` only protects within one process or
+host; this uses a ROS service (``arm_motion_lock_server.py``) so two
+clients on different hosts can't race a goal onto the same controller.
 """
 
 from __future__ import annotations
@@ -26,19 +14,15 @@ import time
 
 from arm_interfaces.srv import AcquireArmMotionLock, ReleaseArmMotionLock
 
-# How long to wait for the lock server itself to answer a single acquire/
-# release call — separate from lease_sec (how long the CALLER intends to
-# hold the lock) and from timeout_sec (how long to keep retrying a busy
-# lock below).
+# How long to wait for the lock server to answer a single acquire/release
+# call — separate from lease_sec and timeout_sec below.
 _SERVICE_WAIT_SEC = 2.0
 _CALL_TIMEOUT_SEC = 3.0
 
 
 class ArmMotionBusy(Exception):
-    """Raised by arm_motion_lock() when the lock can't be acquired —
-    either another holder has it, or the lock server itself couldn't be
-    reached (fail closed: never silently skip cross-host exclusion just
-    because its arbiter is unreachable).
+    """Raised when the lock can't be acquired: held by someone else, or
+    the lock server is unreachable (fails closed).
     """
 
 
@@ -47,26 +31,9 @@ def arm_motion_lock(acquire_client, release_client, holder_id: str,
                      lease_sec: float, timeout_sec: float = 0.0):
     """Acquire the cross-host arm-motion lock for the ``with`` block.
 
-    Args:
-        acquire_client/release_client: this caller's own persistent
-            rclpy service clients for arm_motion_lock/acquire and
-            .../release (created once in __init__, same convention as
-            every other client in these two node classes).
-        holder_id: identifies this caller in busy-lock messages and lets
-            a caller safely re-acquire/renew its own still-held lease.
-        lease_sec: worst-case duration of the motion about to run —
-            the server auto-expires the lock after this if release()
-            never arrives (crash, network drop).
-        timeout_sec: 0.0 (default) tries once and raises ArmMotionBusy
-            immediately if busy, mirroring the in-process
-            threading.Lock(blocking=False) pattern both callers already
-            use for their own local lock. A positive value retries until
-            it elapses before giving up the same way.
-
-    Raises:
-        ArmMotionBusy: the lock is held by someone else (or the lock
-            server itself is unreachable) and timeout_sec elapsed (or
-            was 0) without acquiring it.
+    ``lease_sec`` auto-expires the lock server-side if release() never
+    arrives. ``timeout_sec`` 0.0 (default) tries once; raises
+    ArmMotionBusy if still unavailable when it gives up.
     """
     deadline = time.monotonic() + timeout_sec
     while True:
